@@ -7,15 +7,15 @@
 import os
 import shlex
 
-# 加载自动配置（必须）
-config.load_autoconfig()
+# 加载自动配置（需要时取消注释）
+config.load_autoconfig(False)
 if os.environ.get('XDG_SESSION_TYPE') == 'wayland':
     term = 'ghostty'
 else:
     term = 'kitty -T Floating_Term'
 term_cmd = shlex.split(term)
 c.editor.command = term_cmd + ['-e', 'nvim', '{file}', '-c', 'normal {line}G{column0}l']
-fileChooser = term_cmd + ['-e', 'yazi','--chooser-file={}']
+fileChooser = term_cmd + ['-e', 'yazi', '--chooser-file={}']
 c.fileselect.handler = "external"
 c.fileselect.folder.command = fileChooser
 c.fileselect.multiple_files.command = fileChooser
@@ -32,10 +32,12 @@ c.colors.webpage.darkmode.policy.page = 'smart'  # 智能选择暗色模式
 c.colors.webpage.preferred_color_scheme = 'dark'
 
 # 字体设置
-#c.fonts.default_family = ['JetBrains Mono', 'Noto Sans CJK SC', 'DejaVu Sans']
-#c.fonts.default_size = '11pt'
-#c.fonts.web.family.standard = 'Noto Sans CJK SC'
-#c.fonts.web.size.default = 16
+c.fonts.default_family = ['JetBrains Mono', 'Noto Sans CJK SC', 'DejaVu Sans']
+c.fonts.default_size = '11pt'
+c.fonts.web.family.standard = 'Noto Sans CJK SC'
+c.fonts.web.family.fixed = 'JetBrains Mono'
+c.fonts.web.size.default = 16
+c.fonts.web.size.default_fixed = 15
 
 # 界面美化
 # The status bar is shown when in modes other than the default "normal" mode (e.g., insert, command, or caret modes).
@@ -59,7 +61,7 @@ c.url.default_page = 'https://start.duckduckgo.com'
 
 # 快速书签（按 b + 字母访问）
 c.aliases.update({
-    'w': 'open https://www.wikipedia.org',
+    'wiki': 'open https://www.wikipedia.org',
     'c': 'open http://127.0.0.1:9090/ui/#/proxies',
     'h': 'open https://portal.cmy.network/login?redirect=%2Fsubcenter%2Findex',
     'y': 'open https://www.youtube.com',
@@ -72,8 +74,10 @@ c.aliases.update({
     'vva': 'open https://vvacard.com/index/index.html',
     'cmy': 'open https://portal.cmy.network/',
     'gh': 'open https://github.com',
-    'cb': 'open https://codeberg.org',
     'cfg': 'config-edit',  # 编辑本配置文件
+    'src': 'config-source',
+    'au': 'adblock-update',
+    'cb': 'open https://codeberg.org/',
 })
 
 # 搜索引擎（快速搜索） - 确保每个都包含 {} 占位符
@@ -92,16 +96,29 @@ c.url.searchengines = {
     'gpt': 'https://chatgpt.com/?q={}',
     'ai': 'https://claude.ai/chat?q={}',
 }
+c.url.yank_ignored_parameters = [
+    'ref', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term',
+    'utm_content', 'utm_name', 'fbclid', 'gclid', 'mc_cid', 'mc_eid',
+]
 
 # ==================== 隐私与安全 ====================
 
 c.content.canvas_reading = False  # 禁止网站读取 canvas 数据（防指纹追踪）
 c.content.geolocation = False     # 禁用地理位置
 c.content.webrtc_ip_handling_policy = "default-public-interface-only"  # WebRTC IP 泄露保护
+c.content.cookies.accept = 'no-3rdparty'
+
+# 按站点放宽隐私限制，减少登录、验证码和 Web App 兼容性问题
+config.set('content.canvas_reading', True, '*://chatgpt.com/*')
+config.set('content.canvas_reading', True, '*://claude.ai/*')
+config.set('content.cookies.accept', 'all', '*://accounts.google.com/*')
+config.set('content.cookies.accept', 'all', '*://mail.google.com/*')
+config.set('content.cookies.accept', 'all', '*://youtube.com/*')
+config.set('content.cookies.accept', 'all', '*://*.youtube.com/*')
 
 # 内容拦截（广告拦截）
 c.content.blocking.enabled = True
-c.content.blocking.method = 'both'# 使用 hosts 和 AdBlock 列表
+c.content.blocking.method = 'both'  # 使用 hosts 和 AdBlock 列表
 
 c.content.blocking.adblock.lists = [
   "https://easylist.to/easylist/easylist.txt",
@@ -109,8 +126,6 @@ c.content.blocking.adblock.lists = [
   "https://easylist.to/easylist/easyprivacy.txt",
   "https://secure.fanboy.co.nz/fanboy-annoyance.txt",]
 
-# 跟踪保护
-c.content.cookies.accept = 'no-3rdparty'
 #c.content.headers.user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 # Cookie 策略切换
@@ -187,18 +202,17 @@ config.bind('cm', 'clear-messages')
 config.bind(';H', 'fake-key <Escape>')
 
 # 显示/隐藏标签页列表的快捷键
-config.bind(',', 'config-cycle tabs.show never always')
+config.bind(',', 'config-cycle tabs.show never multiple')
 
 # 显示/隐藏状态栏的快捷键
-config.bind('.', 'config-cycle statusbar.show always never')
+config.bind('.', 'config-cycle statusbar.show always in-mode')
 
 # 视频控制（空格播放/暂停，f全屏）
 #config.bind('<Space>', 'hint links spawn --detach mpv --ytdl-format=bestvideo+bestaudio/best {hint-url}')
+config.bind(';Dv', 'hint links spawn ' + ' '.join(term_cmd + ['-e', 'yt-dlp', '{hint-url}']))
 
-config.bind(';Dv', 'hint links spawn ghostty -e yt-dlp {hint-url}')
-
-# 复制当前页面URL并用mpv播放（最高画质）
-config.bind(';vm', 'yank url ;; spawn --detach mpv --ytdl-format=bestvideo+bestaudio/best {clipboard}')
+# 用 mpv 播放当前页面 URL（最高画质）
+config.bind(';vm', 'spawn --detach mpv --ytdl-format=bestvideo+bestaudio/best {url}')
 
 # 快速搜索选中文本（多种引擎）
 #config.bind('sg', 'cmd-set-text /')
@@ -240,6 +254,13 @@ config.bind(';rss', 'hint feeds')
 # 快速计算器（选中数学表达式后使用）
 config.bind(';calc', 'spawn --userscript qute-calc')
 
+# 密码管理：KeePassXC 集成
+# 需要安装 keepassxc + python-pynacl；多账号选择使用本地 fuzzel 版本脚本。
+config.bind('pw', 'spawn --userscript qute-keepassxc-fuzzel --insecure', mode='normal')
+config.bind('<Alt-Shift-u>', 'spawn --userscript qute-keepassxc-fuzzel --insecure', mode='insert')
+config.bind('pt', 'spawn --userscript qute-keepassxc-fuzzel --insecure --totp', mode='normal')
+config.bind('<Alt-Shift-t>', 'spawn --userscript qute-keepassxc-fuzzel --insecure --totp', mode='insert')
+
 # 命令行补全中用 Ctrl-P/N 浏览历史（和 shell/vim 习惯一致）
 config.bind('<Ctrl-p>', 'completion-item-focus --history prev', mode='command')  # 上一条历史
 config.bind('<Ctrl-n>', 'completion-item-focus --history next', mode='command')  # 下一条历史
@@ -248,7 +269,7 @@ config.bind('<Ctrl-n>', 'completion-item-focus --history next', mode='command') 
 config.bind('<Ctrl-Shift-p>', 'open -p')
 
 # 当前标签页转为隐私模式打开
-config.bind('gp', 'open -p')
+config.bind('gp', 'open -p {url}')
 
 # ==================== 用户脚本 ====================
 
@@ -275,11 +296,17 @@ c.completion.shrink = True
 c.completion.height = '30%'
 c.completion.scrollbar.width = 12
 # 补全类别设置
-c.completion.open_categories = ['filesystem']  # 打开补全时显示文件系统类别
+c.completion.open_categories = [
+    'searchengines',
+    'quickmarks',
+    'bookmarks',
+    'history',
+    'filesystem',
+]
 
 # 提示模式设置
 c.keyhint.delay = 0
-c.hints.chars = 'asdfghjkl;'
+c.hints.chars = 'asdfghjklqweruiop'
 c.hints.mode = 'letter'
 c.hints.auto_follow = 'always'
 c.hints.auto_follow_timeout = 0
@@ -292,31 +319,16 @@ c.session.lazy_restore = True
 c.input.mouse.back_forward_buttons = True
 
 # ==================== 环境特定配置 ====================
+# Wayland 支持 + AMD VA-API 硬件加速
+# 启动闪退时先不要传 Chromium/Qt 参数；确认稳定后再逐项加回。
+# if os.environ.get('WAYLAND_DISPLAY'):
+#     c.qt.args = [
+#         'enable-features=WebRTCPipeWireCapturer,VaapiVideoDecoder',
+#         'use-gl=egl',
+#         'enable-gpu-rasterization',
+#         'enable-zero-copy',
+#     ]
 
-# Wayland 支持（如果你使用 Wayland）
-if os.environ.get('WAYLAND_DISPLAY'):
-    c.qt.args = [
-        '--enable-features=WebRTCPipeWireCapturer,VaapiVideoDecoder',
-        '--use-gl=egl',
-        '--enable-gpu-rasterization',
-        '--enable-zero-copy',
-    ]
-    c.qt.force_platform = 'wayland'
-
-# ==================== 调试与日志 ====================
-
-# 日志级别（调试时使用）
-# c.logging.level.console = 'debug'
-# c.logging.level.js = 'info'
-
-# 性能监控
-c.content.site_specific_quirks.enabled = True
-
-print('qutebrowser 配置加载完成！')
-print('提示: 按 :cfg 编辑配置，按 :reload 重新加载')
-print('常用命令:')
-print('  :open url           - 打开网址')
-print('  :tab-open url       - 新标签页打开')
-print('  :set url.searchengines - 配置搜索引擎')
-print('  :bookmark-add       - 添加书签')
-print('  :quickmark-add      - 添加快捷书签')
+# 解决视频黑屏闪烁问题 (QtWebEngine 6.11 + AMD GPU bug)
+# 如需启用硬件加速看视频，可等待 v3.6.4 更新
+#c.qt.args += ['--disable-gpu']
