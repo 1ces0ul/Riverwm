@@ -6,6 +6,10 @@ for f in ~/.config/environment.d/*.conf; do
   [ -f "$f" ] && set -a && source "$f" && set +a
 done
 
+# GTK on Wayland should use text-input-v3. Keep gtk-im-module=fcitx in
+# GTK settings files for X11/XWayland, but do not export GTK_IM_MODULE globally.
+unset GTK_IM_MODULE
+
 # 清理可能过时的 WAYLAND_DISPLAY，避免连接已失效的 socket
 unset WAYLAND_DISPLAY
 
