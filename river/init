@@ -51,17 +51,30 @@ local function cmd(command, sep, i, j)
 	end
 end
 
+---@return string
+---@param str string
+---@nodiscard
+local function shell_quote(str)
+	return "'" .. tostring(str):gsub("'", "'\\''") .. "'"
+end
+
 --  Helper fuction to only spawn a program when no instance of it is running
 --  already, so init can be re-run without all widgets being duplicated.
 ---@param command string
-local function spawn_once(command)
-	local program = string.match(command, "^%w+")
+---@param process_name string?
+local function spawn_once(command, process_name)
+	local program = process_name or command:match("^%s*([^%s]+)")
+	if not program then
+		return
+	end
+	program = program:gsub("^['\"]", ""):gsub("['\"]$", "")
+	program = program:match("([^/]+)$") or program
 
 	---@return boolean
 	---@param program_name string
 	local function is_not_spawned(program_name)
 		local is_running =
-			popen(fmt("if pgrep -x %s >/dev/null 2>&1 ; then echo 'true' ; else echo 'false' ; fi", program_name))
+			popen(fmt("if pgrep -x %s >/dev/null 2>&1 ; then echo 'true' ; else echo 'false' ; fi", shell_quote(program_name)))
 
 		local stringtoboolean = { ["true"] = true, ["false"] = false }
 		return not stringtoboolean[is_running]
@@ -69,7 +82,7 @@ local function spawn_once(command)
 
 	local is_not_running = is_not_spawned(program)
 	if is_not_running then
-		exec(fmt("riverctl spawn '%s'", command))
+		exec(fmt("riverctl spawn %s", shell_quote(command)))
 	end
 end
 
@@ -77,6 +90,13 @@ end
 
 -- Your preferred terminal
 local terminal = "ghostty"
+local input_method_env_args =
+	"XMODIFIERS=@im=fcitx QT_IM_MODULE=fcitx QT_IM_MODULES='wayland;fcitx;ibus' SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
+local input_method_spawn_env = "env -u GTK_IM_MODULE " .. input_method_env_args
+
+local function with_input_method_env(command)
+	return input_method_spawn_env .. " " .. command
+end
 
 local HOME = getenv("HOME")
 local RIVERCFG = HOME .. "/.config/river/"
@@ -84,7 +104,7 @@ local RIVERCFG = HOME .. "/.config/river/"
 local wallpaper_dir = RIVERCFG .. "wallpapers/"
 -- pick random wallpaper (use Lua instead of ls|shuf)
 local function random_wallpaper(dir)
-	local handle = io.popen(fmt("find %s -type f", dir))
+	local handle = io.popen(fmt("find %s -type f", shell_quote(dir)))
 	if not handle then
 		return ""
 	end
@@ -117,8 +137,8 @@ local max_volume = 1
 local file_manager = "yazi"
 
 -- Menu Launcher
-local desktop_launcher = fmt([[fuzzel --terminal "%s" --lines 25 --width 54 --show-actions]], terminal)
-local fuzzel_menu = fmt([[fuzzel --terminal "%s" --lines 25 --width 90 --dmenu]], terminal)
+local desktop_launcher = with_input_method_env(fmt([[fuzzel --terminal "%s" --lines 25 --width 54 --show-actions]], terminal))
+local fuzzel_menu = with_input_method_env(fmt([[fuzzel --terminal "%s" --lines 25 --width 90 --dmenu]], terminal))
 
 -- Statusbar
 local waybar_cmd = "waybar"
@@ -127,27 +147,154 @@ local waybar_style = RIVERCFG .. "statusbar/waybar/river_style.css"
 local status_bar_cmd = fmt("%s -c %s -s %s", waybar_cmd, waybar_config, waybar_style)
 
 -- Autocommands
-local autostarts = {
+local session_environment_vars = "WAYLAND_DISPLAY XDG_CURRENT_DESKTOP"
+
+local environment_autostarts = {
   -- Startup programs
   -- stylua: ignore
   -- Inform dbus about the environment variables
-	{ "systemctl --user set-environment XDG_CURRENT_DESKTOP=river" },
-	{ "systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP" },
-	{ "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=river" },
-	{ "systemctl --user start awww.service" },
-	{ "awww", "img", wallpaper },
+	{ "systemctl --user unset-environment GTK_IM_MODULE" },
+	{ "systemctl --user set-environment XDG_CURRENT_DESKTOP=river", input_method_env_args },
+	{ "systemctl --user import-environment", session_environment_vars },
+	{ "dbus-update-activation-environment --systemd", session_environment_vars, "XDG_CURRENT_DESKTOP=river", input_method_env_args },
 }
+
+local internal_output = "eDP-1"
+local internal_output_mode = "2256x1504@59.999001Hz"
+
+local output_profile_cmd = RIVERCFG .. "init --apply-output-profile"
+local internal_display_toggle_cmd = RIVERCFG .. "init --toggle-internal-output"
+
+local function parse_outputs()
+	local raw_outputs = popen("wlr-randr")
+	local outputs = {}
+	local current_output = nil
+
+	for line in (raw_outputs .. "\n"):gmatch("([^\n]*)\n") do
+		local output_name = line:match("^([^%s]+)%s")
+		if output_name and not line:match("^%s") then
+			current_output = {
+				name = output_name,
+				enabled = false,
+			}
+			table.insert(outputs, current_output)
+		elseif current_output then
+			local enabled = line:match("^%s+Enabled:%s+(%S+)")
+			if enabled then
+				current_output.enabled = enabled == "yes"
+			end
+
+			local resolution, refresh, flags = line:match("^%s+(%d+x%d+)%s+px,%s+([%d%.]+)%s+Hz%s*(.*)$")
+			if resolution and refresh then
+				local mode = fmt("%s@%sHz", resolution, refresh)
+				current_output.first_mode = current_output.first_mode or mode
+				if flags:find("current") then
+					current_output.current_mode = mode
+				end
+				if flags:find("preferred") then
+					current_output.preferred_mode = mode
+				end
+			end
+		end
+	end
+
+	return outputs
+end
+
+local function output_mode(output, fallback_mode)
+	return output and (output.current_mode or output.preferred_mode or output.first_mode) or fallback_mode
+end
+
+local function output_args(output, position_args, fallback_mode)
+	local args = { "--output", shell_quote(output.name), "--on" }
+	local mode = output_mode(output, fallback_mode)
+	if mode then
+		table.insert(args, "--mode")
+		table.insert(args, shell_quote(mode))
+	end
+	table.insert(args, position_args)
+	table.insert(args, "--scale")
+	table.insert(args, "1")
+	return cmd(args)
+end
+
+local function apply_output_profile()
+	local outputs = parse_outputs()
+	local internal = nil
+	local external_outputs = {}
+
+	for _, output in ipairs(outputs) do
+		if output.name == internal_output then
+			internal = output
+		else
+			table.insert(external_outputs, output)
+		end
+	end
+
+	local wlr_args = {}
+	local focus_output = nil
+
+	if #external_outputs == 0 then
+		internal = internal or { name = internal_output }
+		table.insert(wlr_args, output_args(internal, "--pos 0,0", internal_output_mode))
+		focus_output = internal_output
+	elseif internal and internal.enabled then
+		table.insert(wlr_args, output_args(internal, "--pos 0,0", internal_output_mode))
+
+		local previous_output = internal.name
+		for _, output in ipairs(external_outputs) do
+			table.insert(wlr_args, output_args(output, "--right-of " .. shell_quote(previous_output)))
+			previous_output = output.name
+		end
+	else
+		local previous_output = nil
+		for index, output in ipairs(external_outputs) do
+			local position_args = index == 1 and "--pos 0,0" or "--right-of " .. shell_quote(previous_output)
+			table.insert(wlr_args, output_args(output, position_args))
+			previous_output = output.name
+		end
+		focus_output = external_outputs[1].name
+	end
+
+	if #wlr_args == 0 then
+		return
+	end
+
+	exec("wlr-randr " .. cmd(wlr_args))
+	if focus_output then
+		exec("riverctl focus-output " .. shell_quote(focus_output))
+	end
+end
+
+if arg and arg[1] == "--apply-output-profile" then
+	apply_output_profile()
+	os.exit(0)
+elseif arg and arg[1] == "--toggle-internal-output" then
+	exec("wlr-randr --output " .. shell_quote(internal_output) .. " --toggle")
+	apply_output_profile()
+	os.exit(0)
+end
+
+local service_autostarts = {
+	{ "systemctl --user start awww.service" },
+}
+
+local visual_autostarts = {}
+
+if wallpaper ~= "" then
+	table.insert(visual_autostarts, { "awww", "img", wallpaper })
+end
 
 -- Run startup commands
 ---@param autostart_commands table<table<string>>
 local function run_autostarts(autostart_commands)
 	for _, cmdline in ipairs(autostart_commands) do
-		exec(fmt([[riverctl spawn '%s']], cmd(cmdline)))
+		exec(fmt("riverctl spawn %s", shell_quote(cmd(cmdline))))
 	end
 end
 
 local oneshot_commands = {
-	{ "fcitx5" },
+	{ command = { with_input_method_env("fcitx5") }, process = "fcitx5" },
 	{ "wl-paste", "--watch", "cliphist", "store" },
 }
 
@@ -155,7 +302,11 @@ local oneshot_commands = {
 ---@param oneshot_programs table<integer,table>
 local function run_oneshots(oneshot_programs)
 	for _, program in ipairs(oneshot_programs) do
-		spawn_once(cmd(program))
+		if program.command then
+			spawn_once(cmd(program.command), program.process)
+		else
+			spawn_once(cmd(program))
+		end
 	end
 end
 
@@ -206,8 +357,9 @@ end
 
 local function configure_device(device, options)
 	log(fmt("Configuring device: %s", device))
-	for key, val in pairs(options) do
-		local command = fmt("riverctl input %s %s %s", device, key, val)
+	for _, option in ipairs(options) do
+		local key, val = option[1], option[2]
+		local command = fmt("riverctl input %s %s %s", shell_quote(device), key, val)
 		execute_command(command)
 	end
 end
@@ -221,42 +373,51 @@ local function configure_inputs(input_options)
 end
 
 local touchpad_options = {
-	["events"] = "disabled-on-external-mouse",
-	["accel-profile"] = "adaptive",
-	["pointer-accel"] = "0.6",
-	["click-method"] = "clickfinger",
-	["drag"] = "enabled",
-	["disable-while-typing"] = "enabled",
-	["middle-emulation"] = "enabled",
-	["natural-scroll"] = "enabled",
-	["tap"] = "enabled",
-	["tap-button-map"] = "left-right-middle",
-	["scroll-method"] = "two-finger",
+	{ "events", "disabled-on-external-mouse" },
+	{ "accel-profile", "adaptive" },
+	{ "pointer-accel", "0.6" },
+	{ "click-method", "clickfinger" },
+	{ "drag", "enabled" },
+	{ "disable-while-typing", "enabled" },
+	{ "middle-emulation", "enabled" },
+	{ "natural-scroll", "enabled" },
+	{ "tap", "enabled" },
+	{ "tap-button-map", "left-right-middle" },
+	{ "scroll-method", "two-finger" },
+	{ "scroll-factor", "1.0" },
 }
+
+local tag_count = 8
+local normal_tags_mask = bit.lshift(1, tag_count) - 1
+local scratch_tags = bit.lshift(1, tag_count)
+
+local xcursor_theme = "broodwar"
+local xcursor_size = 24
+local pinned_keyboard_layout = 0
 
 -- River Options
 local river_options = {
-	["default-attach-mode"] = "bottom",
-	["border-width"] = 2,
-	["border-color-focused"] = "0x939393",
-	["border-color-unfocused"] = "0x585858",
-	["border-color-urgent"] = "0xDC322F",
-	["background-color"] = "0x000000",
-	["allow-tearing"] = "enabled",
-	["focus-follows-cursor"] = "normal",
-	["hide-cursor"] = { "when-typing", "enabled" },
-	["cursor-timeout"] = { "timeout", 3000 },
-	["set-cursor-warp"] = "on-output-change",
-	["set-repeat"] = { 50, 300 },
-	["xcursor-theme"] = { "broodwar", 24 },
-	["default-layout"] = "rivertile",
-	["spawn-tagmask"] = 511,
+	{ "default-attach-mode", "bottom" },
+	{ "border-width", 2 },
+	{ "border-color-focused", "0x939393" },
+	{ "border-color-unfocused", "0x585858" },
+	{ "border-color-urgent", "0xDC322F" },
+	{ "background-color", "0x000000" },
+	{ "allow-tearing", "disabled" },
+	{ "focus-follows-cursor", "normal" },
+	{ "hide-cursor", "when-typing", "enabled" },
+	{ "hide-cursor", "timeout", 3000 },
+	{ "set-cursor-warp", "on-output-change" },
+	{ "set-repeat", 50, 300 },
+	{ "xcursor-theme", xcursor_theme, xcursor_size },
+	{ "default-layout", "rivertile" },
+	{ "spawn-tagmask", normal_tags_mask },
 }
 
 -- Set river's options
 local function set_river_options(river_ui_options)
-	for key, value in pairs(river_ui_options) do
-		exec(fmt("riverctl %s %s", key, cmd(value)))
+	for _, command in ipairs(river_ui_options) do
+		exec(fmt("riverctl %s", cmd(command)))
 	end
 end
 
@@ -264,8 +425,8 @@ local gsettings = {
 	["org.gnome.desktop.interface"] = {
 		["gtk-theme"] = "Orchis-dark",
 		["icon-theme"] = "tela-circle-dark",
-		["cursor-theme"] = river_options["xcursor-theme"][1],
-		["cursor-size"] = river_options["xcursor-theme"][2],
+		["cursor-theme"] = xcursor_theme,
+		["cursor-size"] = xcursor_size,
 		["color-scheme"] = "prefer-dark",
 	},
 	["org.gnome.desktop.wm.preferences"] = {
@@ -293,14 +454,14 @@ local mappings = {
 	map = {
 		normal = {
 			-- Add the new keybinding to the mappings
-			{
-				mod = "Super",
-				key = "D",
-				command = {
-					"spawn",
-					[['wlr-randr --output eDP-1 --toggle']],
+				{
+					mod = "Super",
+					key = "D",
+					command = {
+						"spawn",
+						shell_quote(internal_display_toggle_cmd),
+					},
 				},
-			},
 			-- Super + M 切换代理模式 (Proxy mode)
 			{
 				mod = "Super",
@@ -319,7 +480,7 @@ local mappings = {
 			{
 				mod = "Super",
 				key = "T",
-				command = { "spawn", fmt([['%s']], terminal) },
+				command = { "spawn", fmt([['%s']], with_input_method_env(terminal)) },
 			},
 			-- clear notifications
 			{
@@ -345,14 +506,14 @@ local mappings = {
 				key = "E",
 				command = {
 					"spawn",
-					fmt([['%s -e %s']], terminal, file_manager),
+					fmt([['%s']], with_input_method_env(fmt("%s -e %s", terminal, file_manager))),
 				},
 			},
 			-- Browser
 			{
 				mod = { "Super" },
 				key = "B",
-				command = { "spawn", [[qutebrowser]] },
+				command = { "spawn", fmt([['%s']], with_input_method_env("qutebrowser")) },
 			},
 			-- Application launcher
 			{
@@ -450,6 +611,17 @@ local mappings = {
 				key = "P",
 				command = { "focus-view", "previous" },
 			},
+			-- Super+Alt+{N,P} to focus next/previous tiled view, skipping floating views
+			{
+				mod = { "Super", "Alt" },
+				key = "N",
+				command = { "focus-view", "-skip-floating", "next" },
+			},
+			{
+				mod = { "Super", "Alt" },
+				key = "P",
+				command = { "focus-view", "-skip-floating", "previous" },
+			},
 			-- Super+Shift+{J,K} to swap focused view with the next/previous view in the layout stack
 			{
 				mod = { "Super", "Shift" },
@@ -476,12 +648,12 @@ local mappings = {
 			{
 				mod = { "Super", "Shift" },
 				key = "J",
-				command = { "send-to-output", "next" },
+				command = { "send-to-output", "-current-tags", "next" },
 			},
 			{
 				mod = { "Super", "Shift" },
 				key = "K",
-				command = { "send-to-output", "previous" },
+				command = { "send-to-output", "-current-tags", "previous" },
 			},
 			-- Super+Shift+E to bump the focused view to the top of the layout stack
 			{
@@ -662,7 +834,7 @@ local mappings = {
 			-- Control MPRIS aware media players with 'playerctl'
 			{
 				mod = "None",
-				key = "XF86AudioPause ",
+				key = "XF86AudioPause",
 				command = { "spawn", [['playerctl play-pause']] },
 			},
 			{
@@ -723,13 +895,15 @@ local function setup_mappings(mapping_options)
 				local modifiers = cmd(binding.mod, "+")
 				local map_cmd = cmd(binding.command, " ")
 
-				-- Options -release and -repeat for 'map' and 'unmap' commands
-				local opt = binding.opt
-				if opt == "release" or opt == "repeat" then
-					opt = "-" .. opt
-				else
-					opt = ""
+				local opts = {}
+				if binding.opt == "release" or binding.opt == "repeat" then
+					table.insert(opts, "-" .. binding.opt)
 				end
+				if map_type == "map" and mode == "normal" and pinned_keyboard_layout ~= nil and not binding.key:match("^XF86") then
+					table.insert(opts, fmt("-layout %s", pinned_keyboard_layout))
+				end
+				local opt = table.concat(opts, " ")
+
 				exec(fmt("riverctl %s %s %s %s %s %s", map_type, opt, mode, modifiers, binding.key, map_cmd))
 
 				-- Duplicate mappings of mode 'locked' for mode 'normal'
@@ -738,6 +912,35 @@ local function setup_mappings(mapping_options)
 				end
 			end
 		end
+	end
+end
+
+local switch_mappings = {
+	{
+		mode = "normal",
+		switch = "lid",
+		state = "close",
+		command = { "spawn", shell_quote(output_profile_cmd) },
+	},
+	{
+		mode = "normal",
+		switch = "lid",
+		state = "open",
+		command = { "spawn", shell_quote(output_profile_cmd) },
+	},
+}
+
+local function setup_switch_mappings(switch_mapping_options)
+	for _, mapping in ipairs(switch_mapping_options) do
+		exec(
+			fmt(
+				"riverctl map-switch %s %s %s %s",
+				mapping.mode,
+				mapping.switch,
+				mapping.state,
+				cmd(mapping.command)
+			)
+		)
 	end
 end
 
@@ -806,9 +1009,14 @@ local function setup_user_modes(user_declared_modes)
 		exec(fmt("riverctl map %s %s %s enter-mode normal", declared_mode, exit.mod, exit.key))
 
 		for _, mode in ipairs(modes.commands) do
+			local opt = ""
+			if pinned_keyboard_layout ~= nil and not mode.key:match("^XF86") then
+				opt = fmt("-layout %s", pinned_keyboard_layout)
+			end
 			exec(
 				fmt(
-					'riverctl map %s %s %s spawn "%s"',
+					'riverctl map %s %s %s %s spawn "%s"',
+					opt,
 					declared_mode,
 					mode.mod,
 					mode.key,
@@ -851,45 +1059,53 @@ end
 -- Mappings for tag management
 -- These mappings are repeated, so they are separated from the mappings table
 local function tag_mappings()
-	for i = 1, 9 do
+	for i = 1, tag_count do
 		local tag_mask = bit.lshift(1, i - 1) -- 1 << (i - 1)
+		local opt = pinned_keyboard_layout ~= nil and fmt("-layout %s ", pinned_keyboard_layout) or ""
 
-		-- Super+[1-9] to set specified tag output (tag-mask) as current focused tag output
-		exec(fmt("riverctl map normal Super %s set-focused-tags %s", i, tag_mask))
+		-- Super+[1-8] to set specified tag output (tag-mask) as current focused tag output
+		exec(fmt("riverctl map %snormal Super %s set-focused-tags %s", opt, i, tag_mask))
 
-		-- Super+Shift+[1-9] to set/move focused view/window onto specified tag output [0-8]
-		exec(fmt("riverctl map normal Super+Shift %s set-view-tags %s", i, tag_mask))
+		-- Super+Shift+[1-8] to set/move focused view/window onto specified tag output [0-7]
+		exec(fmt("riverctl map %snormal Super+Shift %s set-view-tags %s", opt, i, tag_mask))
 
-		-- Super+Control+[1-9] to toggle (copying of specified) tag output [0-8] onto current focused tag output
-		exec(fmt("riverctl map normal Super+Control %s toggle-focused-tags %s", i, tag_mask))
+		-- Super+Control+[1-8] to toggle (copying of specified) tag output [0-7] onto current focused tag output
+		exec(fmt("riverctl map %snormal Super+Control %s toggle-focused-tags %s", opt, i, tag_mask))
 
-		-- Super+Alt+[1-9] to toggle (sending a copy of) current focused view/window onto specified tag output [0-8]
-		exec(fmt("riverctl map normal Super+Control+Shift %s toggle-view-tags %s", i, tag_mask))
+		-- Super+Control+Shift+[1-8] to toggle (sending a copy of) current focused view/window onto specified tag output [0-7]
+		exec(fmt("riverctl map %snormal Super+Control+Shift %s toggle-view-tags %s", opt, i, tag_mask))
 	end
 
-	-- Super+0 to focus all tags
-	-- Super+Shift+0 to tag focused view/window with all tags
-	-- river has a total of 32 tags
-	local all_tags_mask = bit.lshift(1, 32) - 1 -- (1 << 32) - 1
-	exec(fmt("riverctl map normal Super 0 set-focused-tags %s", all_tags_mask))
-	exec(fmt("riverctl map normal Super+Shift 0 set-view-tags %s", all_tags_mask))
+	-- Super+0 to focus all configured tags
+	-- Super+Shift+0 to tag focused view/window with all configured tags
+	local opt = pinned_keyboard_layout ~= nil and fmt("-layout %s ", pinned_keyboard_layout) or ""
+	exec(fmt("riverctl map %snormal Super 0 set-focused-tags %s", opt, normal_tags_mask))
+	exec(fmt("riverctl map %snormal Super+Shift 0 set-view-tags %s", opt, normal_tags_mask))
 end
 
 -- Mappings for scratchpad tag management
 local function scratchpad_tag_mappings()
-	-- The scratchpad will live on an unused tag. Which tags are used depends on your
-	-- config, but rivers default uses the first 9 tags.
-	local scratch_tags = bit.lshift(1, 21)
+	-- The scratchpad lives on tag 9, outside the visible 1-8 workspace set.
+	local opt = pinned_keyboard_layout ~= nil and fmt("-layout %s ", pinned_keyboard_layout) or ""
+
+	-- Clear old tag-9 toggle mappings that may remain after reloading older configs.
+	exec("riverctl unmap normal Super+Control 9 2>/dev/null")
+	exec("riverctl unmap normal Super+Control+Shift 9 2>/dev/null")
 
 	-- Toggle viewing the scratchpad on the current tag output with Super+S
-	exec(fmt("riverctl map normal Super S toggle-focused-tags %s", scratch_tags))
+	exec(fmt("riverctl map %snormal Super S toggle-focused-tags %s", opt, scratch_tags))
 
 	-- Send view/window to the scratchpad with Super+Shift+S
-	exec(fmt("riverctl map normal Super+Shift S set-view-tags %s", scratch_tags))
+	exec(fmt("riverctl map %snormal Super+Shift S set-view-tags %s", opt, scratch_tags))
+
+	-- Focus the scratchpad tag directly with Super+9
+	exec(fmt("riverctl map %snormal Super 9 set-focused-tags %s", opt, scratch_tags))
+
+	-- Send view/window to the scratchpad tag directly with Super+Shift+9
+	exec(fmt("riverctl map %snormal Super+Shift 9 set-view-tags %s", opt, scratch_tags))
 
 	-- Set spawn tagmask to ensure new windows don't have the scratchpad tag unless explicitly set.
-	local all_but_scratch_tag = bit.bxor((bit.lshift(1, 32) - 1), scratch_tags)
-	exec(fmt("riverctl spawn-tagmask %s", all_but_scratch_tag))
+	exec(fmt("riverctl spawn-tagmask %s", normal_tags_mask))
 end
 
 ---@param tag number
@@ -909,6 +1125,11 @@ local window_rules = {
 		["csd"] = {
 			"firefox",
 			"mpv",
+		},
+		["tearing"] = {
+			"steam",
+			"dota2",
+			"cs2",
 		},
 		["tags"] = {
 			{ "mpv", workspace(7) },
@@ -932,7 +1153,7 @@ local window_rules = {
 
 -- Window rules
 local function setup_window_rules(window_ui_rules)
-	local no_args = { "float", "no-float", "csd", "ssd", "fullscreen", "no-fullscreen" }
+	local no_args = { "float", "no-float", "csd", "ssd", "fullscreen", "no-fullscreen", "tearing", "no-tearing" }
 	for rule_add_type, value in pairs(window_ui_rules) do
 		for action, items in pairs(value) do
 			if exists(action, no_args) then
@@ -957,7 +1178,11 @@ local function setup_window_rules(window_ui_rules)
 end
 
 -- Apply settings ──
-run_autostarts(autostarts)
+run_autostarts(environment_autostarts)
+apply_output_profile()
+run_oneshots(oneshot_commands)
+run_autostarts(service_autostarts)
+run_autostarts(visual_autostarts)
 configure_inputs(touchpad_options)
 set_river_options(river_options)
 setup_window_rules(window_rules)
@@ -965,19 +1190,21 @@ setup_modes(modes)
 setup_user_modes(user_modes)
 set_gnome_settings(gsettings)
 setup_mappings(mappings)
+setup_switch_mappings(switch_mappings)
 tag_mappings()
 scratchpad_tag_mappings()
-run_oneshots(oneshot_commands)
 
 ----------------------------------------------------------
 -- 显示器电源管理功能
 local function setup_display_power_management()
-	-- 先终止可能存在的旧进程
-	os.execute("pkill swayidle")
-	-- 等待一秒确保进程完全终止
-	os.execute("sleep 1")
-	-- 启动新的 swayidle 进程
-	os.execute("swayidle -w timeout 300 'wlopm --off \"*\"' resume 'wlopm --on \"*\"' &")
+	local pidfile = "/tmp/river-swayidle.pid"
+	local old_pid = popen(fmt("cat %s 2>/dev/null", shell_quote(pidfile)))
+	if old_pid:match("^%d+$") then
+		os.execute(fmt("kill %s >/dev/null 2>&1", old_pid))
+	end
+
+	local swayidle_cmd = [[swayidle -w timeout 300 'wlopm --off "*"' resume 'wlopm --on "*"']]
+	os.execute(fmt("sh -c %s", shell_quote(swayidle_cmd .. " & echo $! > " .. pidfile)))
 end
 
 -- 调用函数
@@ -995,9 +1222,9 @@ execlp(
 	"rivertile",
 	"rivertile",
 	"-view-padding",
-	"1",
+	"3",
 	"-outer-padding",
-	"1",
+	"3",
 	"-main-location",
 	"left",
 	"-main-count",
