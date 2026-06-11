@@ -247,11 +247,16 @@ local function apply_output_profile()
 			previous_output = output.name
 		end
 	else
-		local previous_output = nil
+		local previous_output = ""
 		for index, output in ipairs(external_outputs) do
-			local position_args = index == 1 and "--pos 0,0" or "--right-of " .. shell_quote(previous_output)
+			local position_args
+			if index == 1 then
+				position_args = "--pos 0,0"
+			else
+				position_args = "--right-of " .. shell_quote(previous_output)
+			end
 			table.insert(wlr_args, output_args(output, position_args))
-			previous_output = output.name
+			previous_output = output.name or previous_output
 		end
 		focus_output = external_outputs[1].name
 	end
@@ -480,7 +485,7 @@ local mappings = {
 			{
 				mod = "Super",
 				key = "T",
-				command = { "spawn", fmt([['%s']], with_input_method_env(terminal)) },
+				command = { "spawn", shell_quote(with_input_method_env(terminal)) },
 			},
 			-- clear notifications
 			{
@@ -506,31 +511,31 @@ local mappings = {
 				key = "E",
 				command = {
 					"spawn",
-					fmt([['%s']], with_input_method_env(fmt("%s -e %s", terminal, file_manager))),
+					shell_quote(with_input_method_env(fmt("%s -e %s", terminal, file_manager))),
 				},
 			},
 			-- Browser
 			{
 				mod = { "Super" },
 				key = "B",
-				command = { "spawn", fmt([['%s']], with_input_method_env("qutebrowser")) },
+				command = { "spawn", shell_quote(with_input_method_env("qutebrowser")) },
 			},
 			-- Application launcher
 			{
 				mod = "Super",
 				key = "R",
-				command = { "spawn", fmt([['%s']], desktop_launcher) },
+				command = { "spawn", shell_quote(desktop_launcher) },
 			},
 			-- Clipboard management with cliphist
 			{
 				mod = { "Super", "Alt" },
 				key = "C",
-				command = { "spawn", fmt([['cliphist list | %s | cliphist decode | wl-copy']], fuzzel_menu) },
+				command = { "spawn", shell_quote(fmt([[cliphist list | %s | cliphist decode | wl-copy]], fuzzel_menu)) },
 			},
 			{
 				mod = { "Super", "Alt" },
 				key = "D",
-				command = { "spawn", fmt([['cliphist list | %s | cliphist delete']], fuzzel_menu) },
+				command = { "spawn", shell_quote(fmt([[cliphist list | %s | cliphist delete]], fuzzel_menu)) },
 			},
 			-- Take screenshot of a window
 			{
