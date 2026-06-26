@@ -128,7 +128,7 @@ local SCRIPTS = HOME .. "/.config/river/scripts"
 local waylock = "waylock"
 
 -- Screenshots
-local screenshot_path = HOME .. '/Pictures/Screenshots/Captura-de-pantalla-de_"$(date +%F_%X)".png'
+local screenshot_path = HOME .. '/Pictures/Screenshots/"$(date +%F_%X)".png'
 
 -- wpctl's -l flag is to prevent the volume from exceeding/surpass 160% == 1.6
 local max_volume = 1
