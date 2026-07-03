@@ -73,8 +73,9 @@ local function spawn_once(command, process_name)
 	---@return boolean
 	---@param program_name string
 	local function is_not_spawned(program_name)
-		local is_running =
-			popen(fmt("if pgrep -x %s >/dev/null 2>&1 ; then echo 'true' ; else echo 'false' ; fi", shell_quote(program_name)))
+		local is_running = popen(
+			fmt("if pgrep -x %s >/dev/null 2>&1 ; then echo 'true' ; else echo 'false' ; fi", shell_quote(program_name))
+		)
 
 		local stringtoboolean = { ["true"] = true, ["false"] = false }
 		return not stringtoboolean[is_running]
@@ -130,15 +131,14 @@ local waylock = "waylock"
 -- Screenshots
 local screenshot_path = HOME .. '/Pictures/Screenshots/"$(date +%F_%X)".png'
 
--- wpctl's -l flag is to prevent the volume from exceeding/surpass 160% == 1.6
-local max_volume = 1
-
 -- File manger
 local file_manager = "yazi"
 
 -- Menu Launcher
-local desktop_launcher = with_input_method_env(fmt([[fuzzel --terminal "%s" --lines 25 --width 54 --show-actions]], terminal))
+local desktop_launcher =
+	with_input_method_env(fmt([[fuzzel --terminal "%s" --lines 25 --width 54 --show-actions]], terminal))
 local fuzzel_menu = with_input_method_env(fmt([[fuzzel --terminal "%s" --lines 25 --width 90 --dmenu]], terminal))
+local screenrecord_toggle_cmd = SCRIPTS .. "/screenrecord-toggle.sh"
 
 -- Statusbar
 local waybar_cmd = "waybar"
@@ -156,7 +156,12 @@ local environment_autostarts = {
 	{ "systemctl --user unset-environment GTK_IM_MODULE" },
 	{ "systemctl --user set-environment XDG_CURRENT_DESKTOP=river", input_method_env_args },
 	{ "systemctl --user import-environment", session_environment_vars },
-	{ "dbus-update-activation-environment --systemd", session_environment_vars, "XDG_CURRENT_DESKTOP=river", input_method_env_args },
+	{
+		"dbus-update-activation-environment --systemd",
+		session_environment_vars,
+		"XDG_CURRENT_DESKTOP=river",
+		input_method_env_args,
+	},
 }
 
 local internal_output = "eDP-1"
@@ -287,7 +292,7 @@ local service_autostarts = {
 local visual_autostarts = {}
 
 if wallpaper ~= "" then
-	table.insert(visual_autostarts, { "awww", "img", wallpaper })
+	table.insert(visual_autostarts, { "awww", "img", shell_quote(wallpaper) })
 end
 
 -- Run startup commands
@@ -459,14 +464,14 @@ local mappings = {
 	map = {
 		normal = {
 			-- Add the new keybinding to the mappings
-				{
-					mod = "Super",
-					key = "D",
-					command = {
-						"spawn",
-						shell_quote(internal_display_toggle_cmd),
-					},
+			{
+				mod = "Super",
+				key = "D",
+				command = {
+					"spawn",
+					shell_quote(internal_display_toggle_cmd),
 				},
+			},
 			-- Super + M 切换代理模式 (Proxy mode)
 			{
 				mod = "Super",
@@ -571,6 +576,24 @@ local mappings = {
 				command = {
 					"spawn",
 					fmt([['grim %s']], screenshot_path),
+				},
+			},
+			-- Take screenrecord of a window
+			{
+				mod = "Super",
+				key = "W",
+				command = {
+					"spawn",
+					shell_quote(screenrecord_toggle_cmd),
+				},
+			},
+			-- Take screenrecord of a region of a window
+			{
+				mod = { "Super", "Shift" },
+				key = "W",
+				command = {
+					"spawn",
+					shell_quote(screenrecord_toggle_cmd .. " region"),
 				},
 			},
 			-- Super+Q to close the focused view
@@ -904,7 +927,12 @@ local function setup_mappings(mapping_options)
 				if binding.opt == "release" or binding.opt == "repeat" then
 					table.insert(opts, "-" .. binding.opt)
 				end
-				if map_type == "map" and mode == "normal" and pinned_keyboard_layout ~= nil and not binding.key:match("^XF86") then
+				if
+					map_type == "map"
+					and mode == "normal"
+					and pinned_keyboard_layout ~= nil
+					and not binding.key:match("^XF86")
+				then
 					table.insert(opts, fmt("-layout %s", pinned_keyboard_layout))
 				end
 				local opt = table.concat(opts, " ")
@@ -937,15 +965,7 @@ local switch_mappings = {
 
 local function setup_switch_mappings(switch_mapping_options)
 	for _, mapping in ipairs(switch_mapping_options) do
-		exec(
-			fmt(
-				"riverctl map-switch %s %s %s %s",
-				mapping.mode,
-				mapping.switch,
-				mapping.state,
-				cmd(mapping.command)
-			)
-		)
+		exec(fmt("riverctl map-switch %s %s %s %s", mapping.mode, mapping.switch, mapping.state, cmd(mapping.command)))
 	end
 end
 
@@ -1205,7 +1225,10 @@ local function setup_display_power_management()
 	local pidfile = "/tmp/river-swayidle.pid"
 	local old_pid = popen(fmt("cat %s 2>/dev/null", shell_quote(pidfile)))
 	if old_pid:match("^%d+$") then
-		os.execute(fmt("kill %s >/dev/null 2>&1", old_pid))
+		local old_process = popen(fmt("ps -p %s -o comm= 2>/dev/null", old_pid))
+		if old_process == "swayidle" then
+			os.execute(fmt("kill %s >/dev/null 2>&1", old_pid))
+		end
 	end
 
 	local swayidle_cmd = [[swayidle -w timeout 300 'wlopm --off "*"' resume 'wlopm --on "*"']]
