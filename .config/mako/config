@@ -9,6 +9,7 @@ margin=10
 width=280
 height=60
 text-alignment=center
+format=<b>%s</b>\n%b
 progress-color=over #7aa2f79E
 
 # === 核心行为配置 ===
@@ -30,3 +31,17 @@ format=<b>%s</b>\n%b
 
 [urgency=low]
 invisible=1
+
+[app-name=screenrecord]
+width=520
+height=160
+text-alignment=left
+format=<b>%s</b>\n%b
+group-by=app-name
+
+[app-name=screenrecord summary~="^Recording (canceled|stop failed|stop pending)$"]
+width=320
+height=80
+text-alignment=center
+format=<b>%s</b>\n%b
+group-by=app-name
