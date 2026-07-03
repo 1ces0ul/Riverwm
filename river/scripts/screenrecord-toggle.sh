@@ -115,6 +115,43 @@ enabled_outputs() {
 	'
 }
 
+numbered_outputs() {
+	awk -F '\t' '{printf "%d\t%s\t%s\n", NR, $1, $2}'
+}
+
+output_from_selection() {
+	selection="$1"
+	outputs="$2"
+	index="$(printf '%s\n' "$selection" | awk '{print $1}')"
+
+	case "$index" in
+		"" | *[!0-9]*)
+			printf '%s\n' "$outputs" | awk -F '\t' -v selected="$selection" '
+				$1 == selected {
+					print $1
+					found = 1
+					exit
+				}
+				END {
+					exit found ? 0 : 1
+				}
+			'
+			;;
+		*)
+			printf '%s\n' "$outputs" | awk -F '\t' -v target="$index" '
+				NR == target {
+					print $1
+					found = 1
+					exit
+				}
+				END {
+					exit found ? 0 : 1
+				}
+			'
+			;;
+	esac
+}
+
 choose_capture_output() {
 	if [ -n "${SCREENRECORD_OUTPUT:-}" ]; then
 		printf '%s\n' "$SCREENRECORD_OUTPUT"
@@ -129,10 +166,11 @@ choose_capture_output() {
 	if command -v fuzzel >/dev/null 2>&1; then
 		selection="$(
 			printf '%s\n' "$outputs" |
+				numbered_outputs |
 				fuzzel --dmenu --prompt "Record output: " --lines 8 --width 90
 		)" || return 2
 		[ -n "$selection" ] || return 2
-		printf '%s\n' "$selection" | awk -F '\t' '{print $1}'
+		output_from_selection "$selection" "$outputs" || return 1
 		return 0
 	fi
 
